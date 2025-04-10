@@ -1,0 +1,286 @@
+def def_classify_score_func(score):
+    # Define scoring function
+    if score == "accuracy":
+        from sklearn.metrics import accuracy_score
+        score_func = accuracy_score
+    elif score == "f1":
+        from sklearn.metrics import f1_score
+        score_func = f1_score
+    elif score == "roc_auc":
+        from sklearn.metrics import roc_auc_score
+        score_func = roc_auc_score
+    elif score == "precision":
+        from sklearn.metrics import precision_score
+        score_func = precision_score
+    elif score == "recall":
+        from sklearn.metrics import recall_score
+        score_func = recall_score
+    else:
+        raise ValueError("Invalid scoring metric. Choose from 'accuracy', 'f1', 'roc_auc', 'precision', or 'recall'.")
+    return score_func
+
+def check_hyperparams(model_type: str = "xgboost", hyperparameters: dict = None):
+    # Define hyperparameters for different models
+    if model_type == "xgboost":
+        eligible_hyperparams = ["objective", "eval_metric", "eta", "n_estimators", "max_depth", "subsample", "colsample_bytree", "gamma", "alpha", "lambda",
+                                "max_leaves", "min_child_weight", "scale_pos_weight", "max_bin", "min_split_gain", "grow_policy", "max_bin_by_feature",
+                                "booster", "n_jobs", "max_delta_step", "sampling_method", "colsample_bynode", "colsample_bylevel", "tree_method",
+                                "num_parallel_tree","monotone_constraints","interaction_constraints","importance_type","enable_categorical","max_cat_to_onehot",
+                                "device","verbosity","validate_parameters","nthread","disable_default_eval_metric","updater","refresh_leaf",
+                                "process_type","multi_strategy","max_cached_hist_node","extmem_single_step","max_cat_threshold","feature_selector",
+                                "top_k","base_score","seed"]
+        
+    elif model_type == "lightgbm":
+        eligible_hyperparams = ["objective", "metric", "num_leaves", "learning_rate", "n_estimators", "max_depth", "subsample", "colsample_bytree",
+                                "min_child_weight", "min_split_gain", "lambda_l1", "lambda_l2", "scale_pos_weight", "boosting_type", "bagging_fraction",
+                                "bagging_freq", "feature_fraction", "max_bin"]
+    elif model_type == "randomforest":
+        eligible_hyperparams = ["n_estimators", "max_depth", "min_samples_split", "min_samples_leaf", "max_features", "bootstrap", "criterion"]
+    elif model_type == "logistic":
+        eligible_hyperparams = ["penalty", "C", "solver", "max_iter", "tol", "random_state"]
+    elif model_type == "svm":
+        eligible_hyperparams = ["C", "kernel", "degree", "gamma", "coef0", "tol", "max_iter"]
+    elif model_type == "knn":
+        eligible_hyperparams = ["n_neighbors", "weights", "algorithm", "leaf_size", "metric"]
+    elif model_type == "mlp":
+        eligible_hyperparams = ["hidden_layer_sizes", "activation", "solver", "alpha", "learning_rate", "max_iter", "random_state"]
+    else:
+        raise ValueError("Invalid model type. Choose from 'xgboost', 'lightgbm', 'randomforest', 'logistic', 'svm', 'knn', or 'mlp'.")
+
+    # Check if hyperparameters are passed as a dictionary
+    if hyperparameters is not None and not isinstance(hyperparameters, dict):
+        raise ValueError("Hyperparameters must be passed as a dictionary.")
+    
+    # Check if hyperparameters are eligible
+    if hyperparameters is not None:
+        for key in hyperparameters.keys():
+            if key not in eligible_hyperparams:
+                raise ValueError(f"Invalid hyperparameter: {key}. Must be one of {eligible_hyperparams}.")
+        
+
+def autoMLclassify(X, y, model_type: str = "xgboost", hyperparameters: dict = None, test_size: float = 0.2, cv: int = 5, repeated_SKF: bool = True, 
+                   std_scale: bool = True, score: str = "accuracy", random_state_datasplit: int = 42, random_state_model: int = 123, n_trials: int = 100):
+    """
+    Automatically perform ML classification with sklearn, using Optuna to train the hyperparameters.
+    
+    Parameters" "
+    """
+
+    import numpy as np
+    import pandas as pd
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.model_selection import train_test_split
+    from sklearn.model_selection import cross_val_score
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.model_selection import RepeatedStratifiedKFold
+    import optuna
+
+    if len(np.unique(y)) > 2:
+        classification_type = "multiclass"
+    elif len(np.unique(y)) == 2:
+        classification_type = "binary"
+    else:
+        raise ValueError("The target variable y must be binary or multiclass.")
+
+    #Split data
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state_datasplit, stratify=y)
+    y_train = pd.Series(y_train, name=y.name)
+    y_test = pd.Series(y_test, name=y.name)
+
+    #Scale
+    if std_scale:
+        X_train = pd.DataFrame(StandardScaler().fit_transform(X_train), columns=X.columns)
+        X_test = pd.DataFrame(StandardScaler().fit_transform(X_test), columns=X.columns)
+    else:
+        X_train = pd.DataFrame(X_train, columns=X.columns)
+        X_test = pd.DataFrame(X_test, columns=X.columns)
+
+    #Define scoring function
+    score_func = def_classify_score_func(score)
+    
+    #Check hyperparameters
+    check_hyperparams(model_type, hyperparameters)
+
+    #Define model, objective function, and check hyperparameter dict
+    if model_type == "xgboost":
+        
+        # Define the model
+        from xgboost import XGBClassifier
+        model = XGBClassifier()
+        def objective(trial):
+            default_hyperparams = {
+                'eta': trial.suggest_float('eta', 1e-3, 1e0, log=True), #learning rate (default 0.3)
+                'n_estimators': trial.suggest_int('n_estimators', 100, 1000), #number of boosting rounds
+                'max_depth': trial.suggest_int('max_depth', 3, 10), #maximum depth of a tree (default 6)
+                'subsample': trial.suggest_float('subsample', 0.5, 1.0), #subsample ratio of the training instance (default 1)
+                'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0), #subsample ratio of columns when constructing each tree (default 1)
+                'gamma': trial.suggest_float('gamma', 1e-8, 1.0, log=True), #minimum loss reduction required to make a partition (default 0)
+                'min_child_weight': trial.suggest_int('min_child_weight', 1, 10), #minimum sum of instance weight (hessian) needed in a child for further partitioning to continue (default 1)
+                'alpha': trial.suggest_float('alpha', 1e-8, 1.0, log=True), #L1 regularization term on weights (default 0)
+                'lambda': trial.suggest_float('lambda', 1e-8, 1.0, log=True), #L2 regularization term on weights (default 1)
+                'seed': random_state_model
+            }
+            if classification_type == "binary":
+                default_hyperparams['objective'] = 'binary:logistic'
+                default_hyperparams['eval_metric'] = 'logloss'
+            elif classification_type == "multiclass":
+                default_hyperparams['objective'] = 'multi:softmax'
+                default_hyperparams['eval_metric'] = 'mlogloss'
+                default_hyperparams['num_class'] = len(np.unique(y_train))
+            
+            if hyperparameters is None:
+                params = default_hyperparams.copy()
+            else:
+                params = {**default_hyperparams, **hyperparameters}
+
+            # Cross-validation
+            if repeated_SKF:
+                kf = RepeatedStratifiedKFold(n_splits=cv, n_repeats=3, random_state=random_state_datasplit)
+            else:
+                kf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state_datasplit)
+            cv_scores = []
+    
+            for train_index, test_index in kf.split(X_train, y_train):
+                X_train_cv, X_test_cv = X_train.iloc[train_index], X_train.iloc[test_index]
+                y_train_cv, y_test_cv = y_train.iloc[train_index], y_train.iloc[test_index]
+
+                model_optuna = XGBClassifier(**params)
+                model_optuna.fit(X_train_cv, y_train_cv)
+                y_pred_cv = model_optuna.predict(X_test_cv)
+                cv_scores.append(score_func(y_test_cv, y_pred_cv))
+
+            return sum(cv_scores) / len(cv_scores)
+        
+    elif model_type == "lightgbm":
+        from lightgbm import LGBMClassifier
+        model = LGBMClassifier()
+        def objective(trial):
+            default_hyperparams = {
+                'objective': 'binary',
+                'metric': 'binary_logloss',
+                'num_leaves': trial.suggest_int('num_leaves', 20, 100),
+                'learning_rate': trial.suggest_float('learning_rate', 1e-3, 1e0, log=True),
+                'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
+                'max_depth': trial.suggest_int('max_depth', -1, 10),
+                'subsample': trial.suggest_float('subsample', 0.5, 1.0),
+                'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+                'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
+                'min_split_gain': trial.suggest_float('min_split_gain', 1e-8, 1.0, log=True),
+                'lambda_l1': trial.suggest_float('lambda_l1', 1e-8, 1.0, log=True),
+                'lambda_l2': trial.suggest_float('lambda_l2', 1e-8, 1.0, log=True),
+                'scale_pos_weight': trial.suggest_float('scale_pos_weight', 1e-8, 10.0, log=True),
+                'seed': random_state_model
+            }
+
+            if hyperparameters is None:
+                params = default_hyperparams.copy()
+            else:
+                params = {**default_hyperparams, **hyperparameters}
+
+            # Cross-validation
+            if repeated_SKF:
+                kf = RepeatedStratifiedKFold(n_splits=cv, n_repeats=3, random_state=random_state_datasplit)
+            else:
+                kf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state_datasplit)
+            cv_scores = []
+    
+            for train_index, test_index in kf.split(X_train, y_train):
+                X_train_cv, X_test_cv = X_train.iloc[train_index], X_train.iloc[test_index]
+                y_train_cv, y_test_cv = y_train.iloc[train_index], y_train.iloc[test_index]
+
+                model_optuna = LGBMClassifier(**params)
+                model_optuna.fit(X_train_cv, y_train_cv)
+                y_pred_cv = model_optuna.predict(X_test_cv)
+                cv_scores.append(score_func(y_test_cv, y_pred_cv))
+
+            return sum(cv_scores) / len(cv_scores)
+        
+    elif model_type == "randomforest":
+        from sklearn.ensemble import RandomForestClassifier
+        model = RandomForestClassifier()
+        def objective(trial):
+            default_hyperparams = {
+                'n_estimators': trial.suggest_int('n_estimators', 50, 500),
+                'max_depth': trial.suggest_int('max_depth', 2, 20),
+                'min_samples_split': trial.suggest_int('min_samples_split', 2, 20),
+                'min_samples_leaf': trial.suggest_int('min_samples_leaf', 1, 20),
+                'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2', None]),
+                'bootstrap': trial.suggest_categorical('bootstrap', [True, False]),
+                'criterion': trial.suggest_categorical('criterion', ['gini', 'entropy', 'log_loss']),
+                'random_state': random_state_model
+            }
+
+            if hyperparameters is None:
+                params = default_hyperparams.copy()
+            else:
+                params = {**default_hyperparams, **hyperparameters}
+
+            # Cross-validation
+            if repeated_SKF:
+                kf = RepeatedStratifiedKFold(n_splits=cv, n_repeats=3, random_state=random_state_datasplit)
+            else:
+                kf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state_datasplit)
+            cv_scores = []
+    
+            for train_index, test_index in kf.split(X_train, y_train):
+                X_train_cv, X_test_cv = X_train.iloc[train_index], X_train.iloc[test_index]
+                y_train_cv, y_test_cv = y_train.iloc[train_index], y_train.iloc[test_index]
+
+                model_optuna = model(**params)
+                model_optuna.fit(X_train_cv, y_train_cv)
+                y_pred_cv = model_optuna.predict(X_test_cv)
+                cv_scores.append(score_func(y_test_cv, y_pred_cv))
+
+            return sum(cv_scores) / len(cv_scores)
+        
+    elif model_type == "logistic":
+        from sklearn.linear_model import LogisticRegression
+        model = LogisticRegression()
+    elif model_type == "svm":
+        from sklearn.svm import SVC
+        model = SVC()
+    elif model_type == "knn":
+        from sklearn.neighbors import KNeighborsClassifier
+        model = KNeighborsClassifier()
+    elif model_type == "mlp":
+        from sklearn.neural_network import MLPClassifier
+        model = MLPClassifier()
+    else:
+        raise ValueError("Invalid model type. Choose from 'xgboost', 'lightgbm', 'randomforest', 'logistic', 'svm', 'knn', or 'mlp'.")
+    
+    # Create Optuna study and optimize
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=10)
+
+    print('Best params:', study.best_params)
+    print('Best value:', study.best_value)
+
+    # Train the model with the best hyperparameters
+    best_params = study.best_params.copy()
+    if model_type == "xgboost":
+        best_model = XGBClassifier(**best_params)
+    elif model_type == "lightgbm":
+        best_model = LGBMClassifier(**best_params)
+    best_model.fit(X_train, y_train)
+    y_pred = best_model.predict(X_test)
+    best_score = score_func(y_test, y_pred)
+    print(f"Test score: {best_score}")
+
+    return {'best_model': best_model, 'optuna_study': study, 'split_data': (X_train, X_test, y_train, y_test), 'best_score': best_score}
+
+def autoMLclassify_test():
+    import pandas as pd
+    from sklearn.datasets import make_classification
+
+    # Create a sample dataset
+    X, y = make_classification(n_samples=1000, n_features=20, n_classes=2, random_state=42)
+    X = pd.DataFrame(X, columns=[f'feature_{i}' for i in range(X.shape[1])])
+    y = pd.Series(y, name='target')
+
+    # Run the autoMLclassify function
+    result = autoMLclassify(X, y, model_type='xgboost', hyperparameters=None, test_size=0.2, cv=5, repeated_SKF=True,
+                            std_scale=True, score='accuracy', random_state_datasplit=42, random_state_model=123, n_trials=10)
+
+    print(result['best_model'])
+
+
