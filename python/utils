@@ -1,0 +1,339 @@
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+from scipy.stats import pointbiserialr, spearmanr, pearsonr
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from scipy.stats.contingency import association
+
+def glimpse(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Similar to R's glimpse()
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+
+    Returns
+    -------
+    pd.DataFrame
+
+    Examples:
+    df = pd.DataFrame({"column_one": ["A", "B", "C", "D"], "column_two": [1, 2, 3, 4]})
+    df.pipe(glimpse)
+    """
+    print(f"Rows: {df.shape[0]}")
+    print(f"Columns: {df.shape[1]}")
+
+    sample_size = min(df.shape[0], 5)
+
+    return (
+        df.sample(sample_size)
+        .T.assign(dtypes=df.dtypes)
+        .loc[:, lambda x: sorted(x.columns, key=lambda col: 0 if col == "dtypes" else 1)]
+    )
+
+
+def npnd_describe(arr):
+    """
+    Similar to R's summary()
+
+    Parameters
+    ----------  
+    arr : np.ndarray
+
+    Returns
+    -------
+    dict
+
+    Examples:
+    arr = np.array([1, 2, 3, 4, 5, np.nan])
+    npnd_describe(arr)
+    """
+    out = {
+        "min": np.nanmin(arr),
+        "Q1": np.nanquantile(arr, 0.25),
+        "Median": np.nanmedian(arr), 
+        "Mean": np.nanmean(arr), 
+        "SD": np.nanstd(arr),
+        "Q3": np.nanquantile(arr, 0.75), 
+        "Max": np.nanmax(arr),
+        "NAs": np.sum(np.isnan(arr))
+    }
+    return out
+
+def cat_summary(x, rpl = 2, alt_keys = None):
+    """
+    Similar to R's table()
+    
+    Parameters
+    ----------
+    x : pd.Series
+    rpl : int
+    alt_keys : list
+    
+    Returns
+    -------
+    list
+        
+    Examples:
+    df = pd.DataFrame({"column_one": ["A", "B", "C", "D", "A", "B", "C", "D"], 
+                       "column_two": [1, 2, 3, 4, 5, 6, 7, 8]})"
+    df.apply(lambda x: print(cat_summary(x)))
+    """
+
+    counts = x.value_counts().to_list()
+    keys = x.value_counts().keys().to_list()
+    if alt_keys is not None:
+        keys = alt_keys
+    percs = [round(counts/len(x) * 100, rpl) for counts in counts]
+    percs = [str(keys) + ': ' + str(counts) + ' (' + str(percs) + '%)' for keys, counts, percs in zip(keys, counts, percs)]
+    return percs
+
+def get_col_index_by_dtype(df, dtype):
+    """
+    Get column indices by data type.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The input DataFrame.
+    dtype : str
+        The data type to filter columns by (e.g., 'int64', 'float64', 'object').
+
+    Returns
+    -------
+    list of int
+        List of column indices that match the specified data type.
+
+    Examples:
+    df = pd.DataFrame({"column_one": [1, 2, 3], "column_two": ["A", "B", "C"]})
+    get_col_index_by_dtype(df, 'int64')
+    """
+    return [i for i, col in enumerate(df.columns) if df[col].dtypes == dtype]
+
+def identify_column_types(df, return_index = False):
+    """
+    Identifies continuous and categorical columns in a Pandas DataFrame.
+
+    Args:
+        df (pd.DataFrame): The input DataFrame.
+        return_index (bool, optional): Whether to include the index in the output. Defaults to False.
+
+    Returns:
+        tuple: A tuple containing two lists:
+            - continuous_cols (list): List of continuous column names.
+            - categorical_cols (list): List of categorical column names.
+
+    Examples:
+    data = {'age': [25, 30, 22, 28, 35],
+        'city': ['New York', 'London', 'Paris', 'London', 'Berlin'],
+        'salary': [50000, 60000, 45000, 55000, 70000],
+        'gender': ['Male', 'Female', 'Male', 'Male', 'Female']}
+    
+    df = pd.DataFrame(data)
+    
+    continuous_columns, categorical_columns = identify_column_types(df)
+    print("Continuous Columns:", continuous_columns)
+    print("Categorical Columns:", categorical_columns)
+    """
+    continuous_cols = []
+    categorical_cols = []
+
+    if return_index:
+        for col in df.columns:
+            if len(df[col].unique()) == 2:
+                categorical_cols.append(df.columns.get_loc(col))
+            elif pd.api.types.is_numeric_dtype(df[col]):
+                continuous_cols.append(df.columns.get_loc(col))
+            else:
+                categorical_cols.append(df.columns.get_loc(col))
+    else:
+        for col in df.columns:
+            if len(df[col].unique()) == 2:
+                categorical_cols.append(col)
+            elif pd.api.types.is_numeric_dtype(df[col]):
+                continuous_cols.append(col)
+            else:
+                categorical_cols.append(col)
+
+    return continuous_cols, categorical_cols
+
+def high_corr_pairs(corr, threshold=0.7):
+    """
+    Find pairs of features with correlation above a certain threshold.
+
+    Args:
+        corr (pd.DataFrame): A DataFrame containing the correlation matrix.
+        threshold (float): The correlation threshold to filter pairs.
+    
+    Returns:
+        pd.DataFrame: A DataFrame containing pairs of features with correlation above the threshold.
+    
+    Examples:
+        import seaborn as sns
+        data = sns.load_dataset("titanic")
+        corr = calculate_correlations(data)
+        high_corr_pairs_df = high_corr_pairs(corr['Matrix'], threshold=0.7)
+    """
+    
+    lt_mask = np.tril(np.ones_like(corr, dtype=bool), k=-1)
+    corr_lt = corr.mask(~lt_mask)
+    corr_lt = corr_lt.dropna(axis=0, how='all').dropna(axis=1, how='all')
+    corr_pairs = corr_lt.unstack()
+    high_corr = corr_pairs[(abs(corr_pairs) > threshold)]
+    final_high_corr = high_corr.sort_values(ascending=False, key=abs).dropna().reset_index()
+    final_high_corr.columns = ['Feature1', 'Feature2', 'Correlation']
+    return final_high_corr
+
+def calculate_correlations(df, continuous_correlation: str = "pearson", notext_threshold: int = 20, 
+                           high_corr_threshold: float = 0.7, viz="seaborn") -> dict:
+    """
+    Calculates correlation coefficients between columns in a DataFrame and plots a heatmap.
+
+    Args: 
+        df (pd.DataFrame): A DataFrame with any combination of continuous and 
+            categorical variable columns
+        continuous_correlation (str, optional): Which correlation coefficient should 
+            be used between two continuous variables. Options are 'pearson' (the 
+            default) or 'spearman'.
+        notext_threshold (int, optional): The number of columns in the DataFrame. If 
+            the number of columns is greater than this value, the heatmap will not 
+            display the correlation coefficients in the cells. This is useful for
+            large DataFrames where displaying the coefficients would make the
+            heatmap unreadable.
+        high_corr_thresh (float, optional): The threshold for high correlation. Pairs 
+            of features with an absolute correlation above this value will be returned.
+        viz (str, optional): One of "seaborn" or "plotly" to determine which heatmap
+            plotting method to use. Defaults to "seaborn".
+
+    Returns:
+        dict: A dict containing two items:
+            - 'Matrix': the p x p matrix of correlation coefficients, where p is the number of 
+                total columns in df.
+            - 'HighPairs': a DataFrame containing pairs of features with correlation above the
+                threshold, along with their correlation coefficients.
+            - 'Heatmap': a seaborn or plotly figure heatmap of the correlation coefficients in 'Matrix'.
+
+    Examples:
+        import seaborn as sns
+        data = sns.load_dataset("titanic")
+        corr1 = calculate_correlations(data)
+        corr1['Heatmap']
+    """
+    contcorrtypes = ["pearson", "spearman"]
+    viztypes = ["seaborn", "plotly"]
+    if not continuous_correlation in contcorrtypes:
+        raise(ValueError("'continuous_correlation' must be one of 'pearson' or 'spearman'."))
+    if not viz in viztypes:
+        raise(ValueError("The argument viz must be one of 'seaborn' or 'plotly'."))
+
+    continuous_cols, categorical_cols = identify_column_types(df)
+    corr_matrix = pd.DataFrame(index=df.columns, columns=df.columns, dtype=float)
+
+    # Encode categorical columns for calculations
+    label_encoders = {col: LabelEncoder().fit(df[col]) for col in categorical_cols}
+    encoded_df = df.copy()
+    for col, le in label_encoders.items():
+        encoded_df[col] = le.transform(df[col])
+
+    for col1 in df.columns:
+        for col2 in df.columns:
+            if col1 == col2:
+                corr_matrix.loc[col1, col2] = 1.0
+            elif col1 in continuous_cols and col2 in continuous_cols:
+                if any([any(df[cc].isna()) for cc in [col1, col2]]):
+                    df_dropna = df[[col1, col2]].dropna()
+                    if continuous_correlation == "spearman":
+                        corr_matrix.loc[col1, col2], _ = spearmanr(df_dropna[col1], df_dropna[col2])
+                    else:
+                        corr_matrix.loc[col1, col2], _ = pearsonr(df_dropna[col1], df_dropna[col2])
+                else:
+                    if continuous_correlation == "spearman":
+                        corr_matrix.loc[col1, col2], _ = spearmanr(df[col1], df[col2])
+                    else:
+                        corr_matrix.loc[col1, col2], _ = pearsonr(df[col1], df[col2])
+            elif col1 in categorical_cols and col2 in categorical_cols:
+                contingency_table = pd.crosstab(df[col1], df[col2])
+                corr_matrix.loc[col1, col2] = association(contingency_table, method='cramer')
+            elif (col1 in continuous_cols and col2 in categorical_cols) or (
+                col1 in categorical_cols and col2 in continuous_cols):
+                continuous_col = col1 if col1 in continuous_cols else col2
+                categorical_col = col2 if col2 in categorical_cols else col1
+                if any([any(df[cc].isna()) for cc in [col1, col2]]):
+                    df_dropna = df[[continuous_col, categorical_col]].dropna()
+                    encoded_df_dropna = df_dropna.copy()
+                    encoded_df_dropna[categorical_col] = label_encoders[categorical_col].transform(
+                        df_dropna[categorical_col])
+                    corr_matrix.loc[col1, col2], _ = pointbiserialr(
+                        df_dropna[continuous_col], encoded_df_dropna[categorical_col])
+                else:
+                    corr_matrix.loc[col1, col2], _ = pointbiserialr(
+                        df[continuous_col], encoded_df[categorical_col])
+    
+    #  Get highly correlated pairs
+    high_corr_pairs_df = high_corr_pairs(corr_matrix, threshold=high_corr_threshold)
+
+    # Plot heatmap
+    if viz=="seaborn":
+        plt.figure(figsize=(10, 8))
+        ax = sns.heatmap(corr_matrix.astype(float), annot=(len(df.columns) <= notext_threshold), 
+                        fmt=".2f", cmap="coolwarm", cbar=True)
+        ax.set_title("Correlation Heatmap")
+        fig = ax.get_figure()
+    elif viz=="plotly":
+        import plotly.io as pio
+        import plotly.express as px
+        import plotly.graph_objects as go
+        pio.templates.default = "plotly_white"
+
+        fig = go.Figure(data = go.Heatmap(z=corr_matrix.to_numpy(),
+                                          x=corr_matrix.columns.to_list(),
+                                          y=corr_matrix.columns.to_list(),
+                                          colorscale=px.colors.diverging.RdBu,
+                                          zmin=-1, zmax=1))
+        fig.show()
+
+    return {"Matrix": corr_matrix, "HighPairs": high_corr_pairs_df, "Heatmap": fig}
+
+def one_hot_encode(df, categorical_cols=None, include_dtypes=['object', 'category', 'bool'], drop_sel=None):
+    """
+    Perform one-hot encoding on categorical columns in a DataFrame.
+
+    Args:
+        df (pd.DataFrame): The input DataFrame.
+        categorical_cols (list, optional): List of categorical column names to encode. 
+            If None, all columns with dtypes included in include_dtypes will be encoded.
+        include_dtypes (list, optional): List of dtypes to include for encoding.
+            Defaults to ['object', 'category', 'bool'].
+        drop_sel (str, optional): Column name to drop after encoding; equivalent to the 
+            drop argument in sklearn.preprocessing.OneHotEncoder. Defaults to None.
+            Options include None, 'first', or 'if_binary'. If 'first', the first 
+            category will be dropped to avoid dummy variable trap. If 'if_binary',
+            the first column of each binary column will be dropped, while variables with
+            more than 2 categories will not have the first category dropped.
+
+    Returns:
+        pd.DataFrame: A new DataFrame with one-hot encoded columns.
+
+    Examples:
+        data = {'color': ['red', 'blue', 'green'], 'size': ['S', 'M', 'L']}
+        df = pd.DataFrame(data)
+        encoded_df = one_hot_encode(df, categorical_cols=['color'])
+    """
+    if categorical_cols is None:
+        categorical_cols = df.select_dtypes(include=include_dtypes).columns.tolist()
+    
+    if len(categorical_cols) == 0:
+        print("No categorical columns found for encoding.")
+        return df
+    else:
+        df_cat = df[categorical_cols]
+        df_num = df.drop(columns=categorical_cols)
+        df_cat = df_cat.apply(lambda x: x.astype('category'))
+        encoder = OneHotEncoder(sparse=False, drop=drop_sel)
+        encoded_cat = encoder.fit_transform(df_cat)
+        encoded_cat_df = pd.DataFrame(encoded_cat, columns=encoder.get_feature_names_out(categorical_cols))
+        df = pd.concat([df_num, encoded_cat_df], axis=1)
+        df.drop(columns=categorical_cols, inplace=True)
+        return df
